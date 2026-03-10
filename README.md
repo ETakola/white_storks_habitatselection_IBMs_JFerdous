@@ -1,5 +1,5 @@
 # White Stork Habitat Selection and IBMs
-# Jannatul Ferdous
+## Created by: Jannatul Ferdous
 
 Maps of NDVI, NDWI and land use are extracted from Google Earth Engine. 
 RSFs are fitted with a mixed-effects RSF with glmmTMB R package. 
