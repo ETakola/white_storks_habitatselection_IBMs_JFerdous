@@ -6,7 +6,8 @@ Created by: Jannatul Ferdous
 * RSFs are fitted with a mixed-effects RSF with glmmTMB R package. 
 * IBM was done in Python. 
 
-```json[{
+```json
+[{
 "type": "FeatureCollection",
 "name": "bird_tracks_lines",
 "crs": { "type": "name", "properties": { "name": "urn:ogc:def:crs:OGC:1.3:CRS84" } },
