@@ -8,6 +8,8 @@ Created by: Jannatul Ferdous
 
 ## Bird tracks
 
+## Bird tracks
+
 ```{r echo=FALSE, results='asis'}
 geo <- paste(readLines("bird_tracks_lines.geojson", warn = FALSE), collapse = "\n")
 cat("```geojson\n", geo, "\n```\n", sep = "")
