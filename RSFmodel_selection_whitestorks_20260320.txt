@@ -1,0 +1,113 @@
+############################################################
+# TEST ALL ALLOWED PREDICTOR COMBINATIONS
+# Rule:
+# - use either ndvi or ndwi
+# - use one landscape metric at a time
+# - always keep LULC_class
+# - compare AIC across models
+#
+# IMPORTANT:
+# To compare AIC fairly, all models should use the SAME rows.
+# So we make one common complete-case dataset first.
+############################################################
+
+library(tidyverse)
+library(survival)
+
+# ----------------------------------------------------------
+# 1) Build one common dataset for all candidate models
+# ----------------------------------------------------------
+model_dat_all <- dat %>%
+  select(
+    set_id, bird_id, used, LULC_class,
+    ndvi, ndwi,
+    ED_scaled, SHDI_scaled, SHEI_scaled, PD_scaled
+  ) %>%
+  drop_na()
+
+cat("Rows in model_dat_all:", nrow(model_dat_all), "\n")
+cat("Choice sets in model_dat_all:", n_distinct(model_dat_all$set_id), "\n")
+
+# ----------------------------------------------------------
+# 2) Define the allowed predictor combinations
+# ----------------------------------------------------------
+veg_vars <- c("ndvi", "ndwi")
+land_vars <- c("ED_scaled", "SHDI_scaled", "SHEI_scaled", "PD_scaled")
+
+model_grid <- tidyr::crossing(
+  veg = veg_vars,
+  land = land_vars
+) %>%
+  mutate(
+    model_name = paste0("m_", veg, "_", land)
+  )
+
+print(model_grid)
+
+# ----------------------------------------------------------
+# 3) Fit all models
+# ----------------------------------------------------------
+fit_one_model <- function(veg, land, model_name, data) {
+  
+  # Build the formula as text, then convert to formula
+  form_txt <- paste0(
+    "used ~ ", veg, " + ", land, " + LULC_class + strata(set_id) + cluster(bird_id)"
+  )
+  
+  form <- as.formula(form_txt)
+  
+  fit <- clogit(
+    formula = form,
+    data = data,
+    method = "efron"
+  )
+  
+  list(
+    name = model_name,
+    formula = form,
+    fit = fit
+  )
+}
+
+all_models <- purrr::pmap(
+  list(model_grid$veg, model_grid$land, model_grid$model_name),
+  ~ fit_one_model(..1, ..2, ..3, data = model_dat_all)
+)
+
+names(all_models) <- model_grid$model_name
+
+# ----------------------------------------------------------
+# 4) Compare AIC
+# ----------------------------------------------------------
+aic_table <- purrr::map_dfr(all_models, function(x) {
+  tibble(
+    model = x$name,
+    formula = deparse(x$formula),
+    AIC = AIC(x$fit)
+  )
+}) %>%
+  arrange(AIC)
+
+print(aic_table, n = Inf)
+
+# Optional: save AIC table
+write_csv(aic_table, "clogit_model_AIC_comparison.csv")
+
+# ----------------------------------------------------------
+# 5) Inspect the best model
+# ----------------------------------------------------------
+best_model_name <- aic_table$model[1]
+best_model <- all_models[[best_model_name]]$fit
+
+cat("\nBest model by AIC:", best_model_name, "\n")
+print(summary(best_model))
+
+# ----------------------------------------------------------
+# 6) Optional: inspect all model summaries
+# ----------------------------------------------------------
+for (nm in names(all_models)) {
+  cat("\n====================================================\n")
+  cat("MODEL:", nm, "\n")
+  cat("====================================================\n")
+  print(summary(all_models[[nm]]$fit))
+}
