@@ -1,0 +1,378 @@
+# ==========================================================
+# YEAR-BY-YEAR BIRD MOVEMENT ANIMATIONS ON A REAL MAP
+# ----------------------------------------------------------
+# ADAPTED FROM YOUR ORIGINAL WORKFLOW
+#
+# What this script does:
+# 1) loads the uploaded CSV
+# 2) keeps only true locations if a `used` column exists
+#    (otherwise keeps all rows)
+# 3) builds one animation per year on Esri World Imagery
+# 4) saves one MP4 and one GIF per year
+# 5) also exports yearly point/line GeoJSON files
+#
+# Expected input file:
+#   simulated_steps_2daily_points_all_vars.csv
+#
+# Required columns in your uploaded file:
+#   bird_id, timestamp, lat, lon, year
+#
+# Your uploaded CSV does NOT have a `used` column,
+# so this script automatically keeps all rows.
+# ==========================================================
+
+############################
+# 0) LOAD PACKAGES
+############################
+library(tidyverse)
+library(sf)
+library(ggplot2)
+library(gganimate)
+library(av)
+library(maptiles)
+library(tidyterra)
+library(leaflet)
+library(htmlwidgets)
+
+if (!requireNamespace("gifski", quietly = TRUE)) {
+  stop("Please install gifski first: install.packages('gifski')")
+}
+
+############################
+# 1) READ DATA
+############################
+input_file <- "simulated_steps_2daily_points_all_vars.csv"
+
+d <- readr::read_csv(input_file, show_col_types = FALSE)
+
+required_cols <- c("bird_id", "timestamp", "lat", "lon", "year")
+missing_cols <- setdiff(required_cols, names(d))
+
+if (length(missing_cols) > 0) {
+  stop(
+    paste0(
+      "Missing required columns: ",
+      paste(missing_cols, collapse = ", ")
+    )
+  )
+}
+
+############################
+# 2) KEEP ONLY TRUE LOCATIONS
+############################
+# If `used` exists, keep only used == 1
+# Otherwise keep all rows
+if ("used" %in% names(d)) {
+  tracks <- d %>%
+    filter(used == 1)
+} else {
+  message("No `used` column found; keeping all rows as true locations.")
+  tracks <- d
+}
+
+############################
+# 3) CLEAN + ORDER TRACKS
+############################
+tracks <- tracks %>%
+  mutate(
+    timestamp = as.POSIXct(timestamp, tz = "UTC"),
+    bird_id = as.character(bird_id),
+    year = as.integer(year)
+  ) %>%
+  filter(!is.na(lon), !is.na(lat), !is.na(year), !is.na(timestamp)) %>%
+  arrange(year, bird_id, timestamp) %>%
+  group_by(year, bird_id) %>%
+  mutate(
+    track_order = row_number(),
+    n_points = n(),
+    progress = ifelse(n_points == 1, 0, (track_order - 1) / (n_points - 1))
+  ) %>%
+  ungroup()
+
+cat("\nNumber of retained locations per bird and year:\n")
+print(tracks %>% count(year, bird_id, sort = TRUE), n = Inf)
+
+years_available <- sort(unique(tracks$year))
+bird_ids_all <- sort(unique(tracks$bird_id))
+
+############################
+# 4) OUTPUT FOLDER
+############################
+out_dir <- "bird_year_outputs"
+dir.create(out_dir, showWarnings = FALSE, recursive = TRUE)
+
+############################
+# 5) GLOBAL MAP EXTENT
+############################
+# Use a consistent extent across all years so outputs are comparable
+x_range <- range(tracks$lon, na.rm = TRUE)
+y_range <- range(tracks$lat, na.rm = TRUE)
+
+x_buffer <- max(0.2, diff(x_range) * 0.08)
+y_buffer <- max(0.2, diff(y_range) * 0.08)
+
+x_lim <- c(x_range[1] - x_buffer, x_range[2] + x_buffer)
+y_lim <- c(y_range[1] - y_buffer, y_range[2] + y_buffer)
+
+bbox_poly <- st_as_sfc(
+  st_bbox(
+    c(
+      xmin = x_lim[1],
+      ymin = y_lim[1],
+      xmax = x_lim[2],
+      ymax = y_lim[2]
+    ),
+    crs = st_crs(4326)
+  )
+)
+
+############################
+# 6) DOWNLOAD ESRI SATELLITE TILES ONCE
+############################
+bg_esri <- maptiles::get_tiles(
+  x = bbox_poly,
+  provider = "Esri.WorldImagery",
+  crop = TRUE,
+  project = TRUE,
+  verbose = TRUE
+)
+
+cat("\nTile CRS:\n")
+print(sf::st_crs(terra::crs(bg_esri)))
+
+cat("\nTile summary:\n")
+print(bg_esri)
+
+############################
+# 7) CONSISTENT BIRD COLORS
+############################
+pal_vals <- grDevices::hcl.colors(length(bird_ids_all), "Dark 3")
+names(pal_vals) <- bird_ids_all
+
+############################
+# 8) OPTIONAL: INTERACTIVE MAP OF ALL YEARS
+############################
+m <- leaflet(options = leafletOptions(preferCanvas = TRUE)) %>%
+  addProviderTiles(providers$Esri.WorldImagery, group = "Satellite") %>%
+  addProviderTiles(providers$CartoDB.VoyagerOnlyLabels, group = "Labels") %>%
+  addProviderTiles(providers$CartoDB.Positron, group = "Light") %>%
+  addScaleBar(position = "bottomleft")
+
+for (b in bird_ids_all) {
+  df_b <- tracks %>% filter(bird_id == b)
+  
+  m <- m %>%
+    addPolylines(
+      data = df_b,
+      lng = ~lon,
+      lat = ~lat,
+      color = pal_vals[b],
+      weight = 3,
+      opacity = 0.9,
+      group = as.character(b),
+      label = ~paste("bird_id:", bird_id)
+    ) %>%
+    addCircleMarkers(
+      data = df_b,
+      lng = ~lon,
+      lat = ~lat,
+      radius = 3,
+      stroke = FALSE,
+      fillOpacity = 0.95,
+      color = pal_vals[b],
+      group = as.character(b),
+      popup = ~paste0(
+        "<b>bird_id:</b> ", bird_id,
+        "<br><b>year:</b> ", year,
+        "<br><b>track order:</b> ", track_order,
+        "<br><b>lon:</b> ", round(lon, 5),
+        "<br><b>lat:</b> ", round(lat, 5),
+        "<br><b>timestamp:</b> ", timestamp
+      )
+    )
+}
+
+m <- m %>%
+  fitBounds(
+    lng1 = min(tracks$lon, na.rm = TRUE),
+    lat1 = min(tracks$lat, na.rm = TRUE),
+    lng2 = max(tracks$lon, na.rm = TRUE),
+    lat2 = max(tracks$lat, na.rm = TRUE)
+  ) %>%
+  addLayersControl(
+    baseGroups = c("Satellite", "Light"),
+    overlayGroups = c("Labels", as.character(bird_ids_all)),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+htmlwidgets::saveWidget(
+  m,
+  file = file.path(out_dir, "bird_tracks_all_years_leaflet_satellite_labels.html"),
+  selfcontained = TRUE
+)
+
+############################
+# 9) LOOP OVER YEARS
+############################
+for (yr in years_available) {
+  
+  cat("\n====================================\n")
+  cat("Processing year:", yr, "\n")
+  cat("====================================\n")
+  
+  tracks_year <- tracks %>%
+    filter(year == yr) %>%
+    arrange(bird_id, timestamp)
+  
+  if (nrow(tracks_year) == 0) {
+    cat("Skipping year", yr, "- no rows\n")
+    next
+  }
+  
+  # skip impossible cases
+  if (all(is.na(tracks_year$lon)) || all(is.na(tracks_year$lat))) {
+    cat("Skipping year", yr, "- no valid coordinates\n")
+    next
+  }
+  
+  ############################
+  # 9A) EXPORT YEARLY POINTS GEOJSON
+  ############################
+  tracks_points_sf <- st_as_sf(
+    tracks_year,
+    coords = c("lon", "lat"),
+    crs = 4326,
+    remove = FALSE
+  )
+  
+  st_write(
+    tracks_points_sf,
+    file.path(out_dir, paste0("bird_tracks_points_", yr, ".geojson")),
+    delete_dsn = TRUE,
+    quiet = TRUE
+  )
+  
+  ############################
+  # 9B) EXPORT YEARLY LINES GEOJSON
+  ############################
+  track_split <- tracks_year %>%
+    arrange(bird_id, track_order) %>%
+    group_split(bird_id)
+  
+  line_features <- purrr::map(track_split, function(df_b) {
+    if (nrow(df_b) < 2) return(NULL)
+    
+    sf::st_sf(
+      bird_id = as.character(df_b$bird_id[1]),
+      year = unique(df_b$year)[1],
+      n_points = nrow(df_b),
+      geometry = sf::st_sfc(
+        sf::st_linestring(as.matrix(df_b[, c("lon", "lat")])),
+        crs = 4326
+      )
+    )
+  })
+  
+  line_features <- line_features[!vapply(line_features, is.null, logical(1))]
+  
+  if (length(line_features) > 0) {
+    tracks_lines_sf <- do.call(rbind, line_features)
+    
+    st_write(
+      tracks_lines_sf,
+      file.path(out_dir, paste0("bird_tracks_lines_", yr, ".geojson")),
+      delete_dsn = TRUE,
+      quiet = TRUE
+    )
+  } else {
+    cat("No line GeoJSON written for year", yr, "- all birds had < 2 points\n")
+  }
+  
+  ############################
+  # 9C) BUILD YEARLY ANIMATION
+  ############################
+  birds_this_year <- sort(unique(tracks_year$bird_id))
+  
+  p_anim <- ggplot() +
+    tidyterra::geom_spatraster_rgb(data = bg_esri) +
+    geom_path(
+      data = tracks_year,
+      aes(x = lon, y = lat, group = bird_id, color = bird_id),
+      linewidth = 0.8,
+      alpha = 0.85
+    ) +
+    geom_point(
+      data = tracks_year,
+      aes(x = lon, y = lat, group = bird_id, color = bird_id),
+      size = 1.8,
+      alpha = 0.95
+    ) +
+    coord_sf(
+      crs = 4326,
+      xlim = x_lim,
+      ylim = y_lim,
+      expand = FALSE
+    ) +
+    scale_color_manual(
+      values = pal_vals[birds_this_year],
+      drop = FALSE
+    ) +
+    labs(
+      title = paste("Bird tracks —", yr),
+      subtitle = "All birds start together | Relative progress: {round(frame_along, 2)}",
+      x = "Longitude",
+      y = "Latitude",
+      color = "bird_id"
+    ) +
+    theme_bw() +
+    theme(
+      panel.grid = element_blank(),
+      legend.position = "right"
+    ) +
+    transition_reveal(along = progress) +
+    ease_aes("linear")
+  
+  ############################
+  # 9D) SAVE MP4
+  ############################
+  animate(
+    p_anim,
+    nframes = 250,
+    fps = 20,
+    width = 1000,
+    height = 800,
+    units = "px",
+    end_pause = 20,
+    renderer = av_renderer(
+      file.path(out_dir, paste0("bird_movement_", yr, ".mp4"))
+    )
+  )
+  
+  ############################
+  # 9E) SAVE GIF
+  ############################
+  animate(
+    p_anim,
+    nframes = 250,
+    fps = 20,
+    width = 1000,
+    height = 800,
+    units = "px",
+    end_pause = 20,
+    renderer = gifski_renderer(
+      file.path(out_dir, paste0("bird_movement_", yr, ".gif"))
+    )
+  )
+  
+  cat("Saved animation files for year:", yr, "\n")
+}
+
+############################
+# 10) FINAL FILE LIST
+############################
+cat("\nSaved files in folder:", out_dir, "\n")
+cat("- bird_tracks_all_years_leaflet_satellite_labels.html\n")
+cat("- bird_movement_<year>.mp4\n")
+cat("- bird_movement_<year>.gif\n")
+cat("- bird_tracks_points_<year>.geojson\n")
+cat("- bird_tracks_lines_<year>.geojson (if a bird had >= 2 points)\n")

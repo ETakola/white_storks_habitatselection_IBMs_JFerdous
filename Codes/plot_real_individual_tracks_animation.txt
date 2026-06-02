@@ -1,0 +1,285 @@
+# ==========================================================
+# FULL WORKFLOW WITH FIXED ESRI SATELLITE BACKGROUND
+# ----------------------------------------------------------
+# 1) keep only true bird locations (used == 1)
+# 2) save interactive leaflet map as HTML
+# 3) export points + lines as GeoJSON
+# 4) build synchronized animation on Esri World Imagery tiles
+# 5) save animation as MP4 and GIF
+# ==========================================================
+
+############################
+# 0) LOAD PACKAGES
+############################
+library(tidyverse)
+library(leaflet)
+library(htmlwidgets)
+library(sf)
+library(ggplot2)
+library(gganimate)
+library(av)
+library(maptiles)
+library(tidyterra)
+
+if (!requireNamespace("gifski", quietly = TRUE)) {
+  stop("Please install the 'gifski' package first: install.packages('gifski')")
+}
+
+############################
+# 1) KEEP ONLY TRUE LOCATIONS
+############################
+tracks <- d %>%
+  filter(used == 1) %>%
+  arrange(bird_id, year, month, fix_id) %>%
+  group_by(bird_id) %>%
+  mutate(
+    track_order = row_number(),
+    n_points = n(),
+    progress = ifelse(n_points == 1, 0, (track_order - 1) / (n_points - 1))
+  ) %>%
+  ungroup()
+
+cat("\nNumber of true locations per bird:\n")
+print(tracks %>% count(bird_id, sort = TRUE), n = Inf)
+
+############################
+# 2) INTERACTIVE LEAFLET MAP
+############################
+bird_ids <- sort(unique(tracks$bird_id))
+
+pal <- colorFactor(
+  palette = grDevices::hcl.colors(length(bird_ids), "Dark 3"),
+  domain = bird_ids
+)
+
+m <- leaflet(options = leafletOptions(preferCanvas = TRUE)) %>%
+  addProviderTiles(providers$Esri.WorldImagery, group = "Satellite") %>%
+  addProviderTiles(providers$CartoDB.VoyagerOnlyLabels, group = "Labels") %>%
+  addProviderTiles(providers$CartoDB.Positron, group = "Light") %>%
+  addScaleBar(position = "bottomleft")
+
+for (b in bird_ids) {
+  df_b <- tracks %>% filter(bird_id == b)
+
+  m <- m %>%
+    addPolylines(
+      data = df_b,
+      lng = ~lon,
+      lat = ~lat,
+      color = pal(b),
+      weight = 3,
+      opacity = 0.9,
+      group = as.character(b),
+      label = ~paste("bird_id:", bird_id)
+    ) %>%
+    addCircleMarkers(
+      data = df_b,
+      lng = ~lon,
+      lat = ~lat,
+      radius = 3,
+      stroke = FALSE,
+      fillOpacity = 0.95,
+      color = pal(b),
+      group = as.character(b),
+      popup = ~paste0(
+        "<b>bird_id:</b> ", bird_id,
+        "<br><b>track order:</b> ", track_order,
+        "<br><b>lon:</b> ", round(lon, 5),
+        "<br><b>lat:</b> ", round(lat, 5),
+        "<br><b>year:</b> ", year,
+        "<br><b>month:</b> ", month,
+        "<br><b>fix_id:</b> ", fix_id
+      )
+    )
+}
+
+m <- m %>%
+  fitBounds(
+    lng1 = min(tracks$lon, na.rm = TRUE),
+    lat1 = min(tracks$lat, na.rm = TRUE),
+    lng2 = max(tracks$lon, na.rm = TRUE),
+    lat2 = max(tracks$lat, na.rm = TRUE)
+  ) %>%
+  addLayersControl(
+    baseGroups = c("Satellite", "Light"),
+    overlayGroups = c("Labels", as.character(bird_ids)),
+    options = layersControlOptions(collapsed = FALSE)
+  )
+
+m
+
+saveWidget(
+  m,
+  file = "bird_tracks_leaflet_satellite_labels.html",
+  selfcontained = TRUE
+)
+
+############################
+# 3) EXPORT TO GEOJSON
+############################
+# points
+tracks_points_sf <- st_as_sf(
+  tracks,
+  coords = c("lon", "lat"),
+  crs = 4326,
+  remove = FALSE
+)
+
+st_write(
+  tracks_points_sf,
+  "bird_tracks_points.geojson",
+  delete_dsn = TRUE,
+  quiet = TRUE
+)
+
+# lines
+track_split <- tracks %>%
+  arrange(bird_id, track_order) %>%
+  group_split(bird_id)
+
+line_features <- purrr::map(track_split, function(df_b) {
+  if (nrow(df_b) < 2) return(NULL)
+
+  sf::st_sf(
+    bird_id = as.character(df_b$bird_id[1]),
+    n_points = nrow(df_b),
+    geometry = sf::st_sfc(
+      sf::st_linestring(as.matrix(df_b[, c("lon", "lat")])),
+      crs = 4326
+    )
+  )
+})
+
+line_features <- line_features[!vapply(line_features, is.null, logical(1))]
+
+if (length(line_features) > 0) {
+  tracks_lines_sf <- do.call(rbind, line_features)
+
+  st_write(
+    tracks_lines_sf,
+    "bird_tracks_lines.geojson",
+    delete_dsn = TRUE,
+    quiet = TRUE
+  )
+} else {
+  cat("\nNo line GeoJSON written because no bird had at least 2 true locations.\n")
+}
+
+############################
+# 4) DOWNLOAD ESRI SATELLITE TILES FOR ANIMATION
+############################
+x_range <- range(tracks$lon, na.rm = TRUE)
+y_range <- range(tracks$lat, na.rm = TRUE)
+
+x_buffer <- 0.5
+y_buffer <- 0.5
+
+x_lim <- c(x_range[1] - x_buffer, x_range[2] + x_buffer)
+y_lim <- c(y_range[1] - y_buffer, y_range[2] + y_buffer)
+
+# AOI in lon/lat
+bbox_poly <- st_as_sfc(
+  st_bbox(
+    c(
+      xmin = x_lim[1],
+      ymin = y_lim[1],
+      xmax = x_lim[2],
+      ymax = y_lim[2]
+    ),
+    crs = st_crs(4326)
+  )
+)
+
+# IMPORTANT FIX:
+# project = TRUE -> returns raster in same CRS as bbox_poly (EPSG:4326)
+bg_esri <- maptiles::get_tiles(
+  x = bbox_poly,
+  provider = "Esri.WorldImagery",
+  crop = TRUE,
+  project = TRUE,
+  verbose = TRUE
+)
+
+# quick diagnostic
+cat("\nTile CRS:\n")
+print(sf::st_crs(terra::crs(bg_esri)))
+cat("\nTile summary:\n")
+print(bg_esri)
+
+############################
+# 5) BUILD SYNCHRONIZED TRACK ANIMATION
+############################
+p_anim <- ggplot() +
+  tidyterra::geom_spatraster_rgb(data = bg_esri) +
+  geom_path(
+    data = tracks,
+    aes(x = lon, y = lat, group = bird_id, color = bird_id),
+    linewidth = 0.8,
+    alpha = 0.85
+  ) +
+  geom_point(
+    data = tracks,
+    aes(x = lon, y = lat, group = bird_id, color = bird_id),
+    size = 1.8,
+    alpha = 0.95
+  ) +
+  coord_sf(
+    crs = 4326,
+    xlim = x_lim,
+    ylim = y_lim,
+    expand = FALSE
+  ) +
+  labs(
+    title = "Synchronized bird tracks",
+    subtitle = "All birds start together | Relative progress: {round(frame_along, 2)}",
+    x = "Longitude",
+    y = "Latitude",
+    color = "bird_id"
+  ) +
+  theme_bw() +
+  theme(
+    panel.grid = element_blank(),
+    legend.position = "right"
+  ) +
+  transition_reveal(along = progress) +
+  ease_aes("linear")
+
+print(p_anim)
+
+############################
+# 6) SAVE AS MP4
+############################
+animate(
+  p_anim,
+  nframes = 250,
+  fps = 20,
+  width = 1000,
+  height = 800,
+  units = "px",
+  end_pause = 20,
+  renderer = av_renderer("bird_tracks_synchronised_esri.mp4")
+)
+
+############################
+# 7) SAVE AS GIF
+############################
+animate(
+  p_anim,
+  nframes = 250,
+  fps = 20,
+  width = 1000,
+  height = 800,
+  units = "px",
+  end_pause = 20,
+  renderer = gifski_renderer("bird_tracks_synchronised_esri.gif")
+)
+
+############################
+# 8) FINAL FILE LIST
+############################
+cat("\nSaved files:\n")
+cat("- bird_tracks_leaflet_satellite_labels.html\n")
+cat("- bird_tracks_points.geojson\n")
+cat("- bird_tracks_lines.geojson (if birds had >= 2 points)\n")
+cat("- bird_tracks_synchronised_esri.mp4\n")
+cat("- bird_tracks_synchronised_esri.gif\n")
