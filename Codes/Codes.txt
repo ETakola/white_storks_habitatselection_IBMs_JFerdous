@@ -1,3 +1,0 @@
-- the R-code 'RSF combination+k-fold validation.R' contains all the combination of Resource selection function (RSF)
-	-the filtered_data.rds is used for this analysis
-
