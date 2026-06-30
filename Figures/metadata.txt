@@ -1,0 +1,26 @@
+This folder contains the high-resolution figures in three different formants (pdf, svg and png) that have been used in the manuscript. Please find the codes in the scripts folder. 
+
+Figure 1. The geographic context and spatial coverage of the input tracking data. The map shows raw movement trajectories of tracked white storks relative (subset of MPIAB white stork data) to the German national boundary. Lines represent individual empirical trajectories. 
+
+Figure 2. Individual variation in resource selection coefficients from per-bird conditional logistic RSF models using the raw data. Violin plots show the distribution of bird-specific coefficients for NDVI, edge density, and land-cover classes in the selected RSF model. Points represent individual birds, diamonds indicate mean coefficients, and horizontal bars show 95% confidence intervals. 
+
+Figure 3. White stork simulated movement for the years 2000, 2001, 2012, 2018 and 2022 in Germany. Barplots show the number of birds per final status (successful breeder, failed breeder, non-breeder, range shifter, dead). Each line colour corresponds to an individual ID. 
+
+Figure 4. Activity density map by final simulated state representing the Spatial distribution of simulated stork activity across final behavioural states. Points represent gridded movement activity, with colour intensity showing weighted activity as the summed number of steps per grid cell on a log-scaled gradient. Facets separate individuals by final state: dead, failed breeder, non-breeder, shifter, and successful breeder.
+
+Figure 5. Activity density map by simulation year showing the spatial distribution of simulated white stork activity across selected years. Points represent gridded movement activity, with colour intensity indicating weighted activity as the summed number of steps per grid cell on a log-scaled gradient. Facets show year-specific differences in the concentration and spatial spread of simulated movement activity across the study landscape.
+
+Figure 6. Heatmap for the Annual energy budget of individual simulated white storks  showing the cumulative yearly energy score for each individual across simulation years. Tile colour indicates the cumulative energy budget, with higher values representing greater retained energy by the end of the annual simulation. Black cells indicate individuals who died before completing the corresponding simulation year.
+
+Figure S1. Validation performance of the resource selection function (RSF) model using blocked k-fold and leave-one-bird-out (LOBO) cross-validation approaches. Bars represent mean top-1 and top-3 ranking accuracies, while error bars indicate standard deviation across individuals. The dashed red line indicates the approximate random expectation for top-1 ranking accuracy based on the candidate choice-set size (~10 available locations per used point). 
+
+Figure S2. Activity map per year and per final state of each bird for the simulated movement of the IBM. 
+
+Figure S3. Sensitivity analysis of the IBM under different MIN_SHIFT_DISTANCE_M thresholds. Panels show the effects of varying breeding-energy requirements on (a) successful breeders, (b) dead birds, (c) shifters, and (d) mean cumulative energy. Colored points represent individual simulation years, while point shapes indicate stochastic replicates. Black symbols and error bars represent the mean ± standard deviation across all years and replicates.
+
+Figure S4. Sensitivity analysis of the IBM under different MIN_BETTER_SITE_SCORE thresholds. Panels show the effects of varying breeding-energy requirements on (a) successful breeders, (b) dead birds, (c) shifters, and (d) mean cumulative energy. Colored points represent individual simulation years, while point shapes indicate stochastic replicates. Black symbols and error bars represent the mean ± standard deviation across all years and replicates.
+
+Figure S5. Sensitivity analysis of the IBM under different BREED_MIN_EXCESS thresholds. Panels show the effects of varying breeding-energy requirements on (a) successful breeders, (b) dead birds, (c) shifters, and (d) mean cumulative energy. Colored points represent individual simulation years, while point shapes indicate stochastic replicates. Black symbols and error bars represent the mean ± standard deviation across all years and replicates.
+
+Figure S6. Visual ODD for the STRIDE model
+
