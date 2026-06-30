@@ -1,0 +1,334 @@
+###############################################################################################################
+###NDVI-NDWI for used-available points: https://code.earthengine.google.com/afb7c2249193ca323ac0fcf2da8b2484###
+###############################################################################################################
+// ===============================
+// NDVI & NDWI(MNDWI) points export
+// Region: Specific points (used-available points)
+// Years: 1990,1995,2000,2001,2012
+// Author: Jannatul 
+// ===============================
+
+// 1. Load your used + available points (upload "storks_rsftp.gpkg" as a table asset)
+var ptsAll = ee.FeatureCollection("projects/white-stork-thesis/assets/storks_used_ava");
+
+// B. A function to build a single-month NDVI+NDWI image
+function monthlyComposite(year, month) {
+  var start = ee.Date.fromYMD(year, month, 1);
+  var end   = start.advance(1, 'month');
+  
+  // Landsat TM + ETM+
+  var l5 = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+    .filterDate(start, end).filterBounds(ptsAll)
+    .select(["SR_B3","SR_B4","SR_B2"], ["red","nir","green"]);
+  var l7 = ee.ImageCollection('LANDSAT/LE07/C02/T1_L2')
+    .filterDate(start, end).filterBounds(ptsAll)
+    .select(["SR_B3","SR_B4","SR_B2"], ["red","nir","green"]);
+  var coll = l5.merge(l7);
+  
+  // compute indices & median
+  var comp = coll
+    .map(function(img) {
+      var ndvi = img.normalizedDifference(["nir","red"]).rename("NDVI");
+      var ndwi = img.normalizedDifference(["green","nir"]).rename("NDWI");
+      return ndvi.addBands(ndwi);
+    })
+    .median();
+  
+  return comp;
+}
+
+// C. Loop over your year–month window and export each table
+var years  = ee.List.sequence(1992, 2012);
+var months = ee.List.sequence(3, 8);
+
+years.getInfo().forEach(function(y){
+  months.getInfo().forEach(function(m){
+    // 1. Build the composite
+    var img = monthlyComposite(y, m);
+    
+    // 2. Filter your points to just that (year,month)
+    var pts = ptsAll
+      .filter(ee.Filter.eq('year', y))
+      .filter(ee.Filter.eq('month', m));
+    
+    // 3. Sample NDVI/NDWI at your points
+    var extracted = img.reduceRegions({
+      collection: pts,
+      reducer: ee.Reducer.first(),
+      scale: 250,
+      tileScale: 4
+    });
+    
+    // 4. Export to Drive
+    Export.table.toDrive({
+      collection: extracted,
+      description: 'RSF_' + y + '_' + (m<10?'0':'') + m,
+      fileFormat: 'CSV'
+    });
+  });
+});
+
+#####################################################################################################################################
+###NDVI-NDWI rasters for Germany (Selected years @ 250m res): https://code.earthengine.google.com/134690fc348ff2e24115c502bd85ee76###
+#####################################################################################################################################
+// ===============================
+// NDVI & NDWI/MNDWI rasters export (250 m)
+// Region: German national boundary
+// Years: 1990,1995,2000,2001,2012,2018,2022
+// Author: Jannatul 
+// ===============================
+
+// ---- 1) Import region polygon ----
+var region = ee.FeatureCollection("projects/white-stork-thesis/assets/Germany");
+
+// ---- 2) Settings ----
+var years = ee.List([1990, 1995, 2000, 2001, 2012, 2018, 2022]);
+var useMNDWI = 1; // 1 = MNDWI (Green–SWIR1), 0 = Gao NDWI (Green–NIR)
+var startMonth = 7, startDay = 1;
+var endMonth   = 8, endDay   = 31;
+
+Map.centerObject(region, 7);
+
+// ---- 3) Helper functions ----
+
+// QA mask for Landsat C02 L2 SR: mask clouds, shadow, cirrus, snow
+function maskL2sr(img) {
+  var qa = img.select('QA_PIXEL');
+  var mask = qa.bitwiseAnd(1 << 1).eq(0)   // dilated cloud
+    .and(qa.bitwiseAnd(1 << 2).eq(0))      // cirrus
+    .and(qa.bitwiseAnd(1 << 3).eq(0))      // cloud
+    .and(qa.bitwiseAnd(1 << 4).eq(0))      // cloud shadow
+    .and(qa.bitwiseAnd(1 << 5).eq(0));     // snow
+  return img.updateMask(mask);
+}
+
+// Apply reflectance scaling for Landsat Collection 2 Level-2 SR bands
+// SR = DN * 0.0000275 - 0.2  (only for SR_B* bands)
+function scaleSR(img) {
+  var sr = img.select('SR_B.*').multiply(0.0000275).add(-0.2);
+  // keep other bands (QA etc.) untouched
+  return img.addBands(sr, null, true).copyProperties(img, img.propertyNames());
+}
+
+// Rename bands to common names across sensors
+// Landsat 5 TM / Landsat 7 ETM+: Red=SR_B3, Green=SR_B2, NIR=SR_B4, SWIR1=SR_B5
+function renameL57(img) {
+  return img.select(['SR_B3','SR_B2','SR_B4','SR_B5'],
+                    ['Red','Green','NIR','SWIR1']);
+}
+// Landsat 8/9 OLI: Red=SR_B4, Green=SR_B3, NIR=SR_B5, SWIR1=SR_B6
+function renameL89(img) {
+  return img.select(['SR_B4','SR_B3','SR_B5','SR_B6'],
+                    ['Red','Green','NIR','SWIR1']);
+}
+
+// Build a merged Landsat collection for a date window (sensor-aware)
+function getLandsatSR(start, end) {
+  start = ee.Date(start);
+  end   = ee.Date(end);
+
+  // L5 (good for 1990,1995,2000,2001,2012)
+  var l5 = ee.ImageCollection('LANDSAT/LT05/C02/T1_L2')
+    .filterDate(start, end)
+    .filterBounds(region)
+    .map(maskL2sr).map(scaleSR).map(renameL57);
+
+  // L7 (supports 2000,2001,2012; note: SLC-off after 2003 -> gaps)
+  var l7 = ee.ImageCollection('LANDSAT/LE07/C02/T1_L2')
+    .filterDate(start, end)
+    .filterBounds(region)
+    .map(maskL2sr).map(scaleSR).map(renameL57);
+
+  // L8 (best for 2018, 2022)
+  var l8 = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+    .filterDate(start, end)
+    .filterBounds(region)
+    .map(maskL2sr).map(scaleSR).map(renameL89);
+
+  // L9 (available 2022)
+  var l9 = ee.ImageCollection('LANDSAT/LC09/C02/T1_L2')
+    .filterDate(start, end)
+    .filterBounds(region)
+    .map(maskL2sr).map(scaleSR).map(renameL89);
+
+  // Merge all; years with no data for a sensor will just contribute nothing
+  return l5.merge(l7).merge(l8).merge(l9);
+}
+
+// Composite NDVI + NDWI/MNDWI for one year (July–Aug)
+function compositeForYear(year) {
+  year = ee.Number(year);
+  var start = ee.Date.fromYMD(year, startMonth, startDay);
+  var end   = ee.Date.fromYMD(year, endMonth, endDay);
+
+  var coll = getLandsatSR(start, end);
+
+  // If coll is empty, this will produce an empty/invalid image.
+  // We'll guard by checking size and returning a masked constant image if empty.
+  var size = coll.size();
+
+  var composite = ee.Image(ee.Algorithms.If(
+    size.gt(0),
+    coll.median().clip(region),
+    ee.Image.constant([0,0,0,0]).rename(['Red','Green','NIR','SWIR1'])
+      .updateMask(ee.Image(0)) // fully masked
+      .clip(region)
+  ));
+
+  var ndvi = composite.normalizedDifference(['NIR', 'Red']).rename('NDVI');
+
+  var ndwi = ee.Image(ee.Algorithms.If(
+    ee.Number(useMNDWI).eq(1),
+    composite.normalizedDifference(['Green', 'SWIR1']).rename('NDWI'), // MNDWI
+    composite.normalizedDifference(['Green', 'NIR']).rename('NDWI')    // Gao NDWI
+  ));
+
+  // Add metadata to help debugging
+  return ndvi.addBands(ndwi)
+    .set('year', year)
+    .set('start', start.format('YYYY-MM-dd'))
+    .set('end', end.format('YYYY-MM-dd'))
+    .set('n_images', size);
+}
+
+// ---- 4) Build yearly composites ----
+var yearly = ee.ImageCollection(years.map(compositeForYear));
+print('Yearly NDVI/NDWI composites', yearly);
+
+// ---- 5) Quick preview (pick a year) ----
+var previewYear = 2022;
+var imgPrev = yearly.filter(ee.Filter.eq('year', previewYear)).first();
+print('Preview image metadata', imgPrev);
+
+Map.addLayer(imgPrev.select('NDVI'),
+  {min: 0.0, max: 0.6, palette: ['#6b3f00','#e6c86e','#1a9850']},
+  'NDVI ' + previewYear);
+
+Map.addLayer(imgPrev.select('NDWI'),
+  {min: -0.5, max: 0.5, palette: ['#f7fbff','#6baed6','#08519c']},
+  (useMNDWI ? ('MNDWI ' + previewYear) : ('NDWI ' + previewYear)));
+
+// ---- 6) Export loop ----
+// Earth Engine does not allow a true client-side loop to create tasks dynamically,
+// but mapping over a list to create Export tasks works in the Code Editor.
+
+years.getInfo().forEach(function(y) {
+  var img = yearly.filter(ee.Filter.eq('year', y)).first();
+
+  Export.image.toDrive({
+    image: img.select('NDVI'),
+    description: 'NDVI_' + y + '_JulAug_250m',
+    region: region,
+    scale: 250,
+    crs: 'EPSG:3035',
+    maxPixels: 1e13
+  });
+
+  Export.image.toDrive({
+    image: img.select('NDWI'),
+    description: (useMNDWI ? ('MNDWI_' + y + '_JulAug_250m') : ('NDWI_' + y + '_JulAug_250m')),
+    region: region,
+    scale: 250,
+    crs: 'EPSG:3035',
+    maxPixels: 1e13
+  });
+});
+
+################################################################################################################################
+###LULC Rasters for Germany (Selected years @ 250m res): https://code.earthengine.google.com/b29495d532f2013e81a984c6a2b1526e###
+################################################################################################################################
+/* --------------------------------------------------------------
+   GEE SCRIPT — Export GLC_FCS30D LULC at 250 m
+   --------------------------------------------------------------
+   Exports:
+     LC_1990_250m.tif
+     LC_1995_250m.tif
+     LC_2000_250m.tif
+     LC_2001_250m.tif
+     LC_2012_250m.tif
+     LC_2018_250m.tif
+     LC_2022_250m.tif
+
+   Notes:
+   - Uses only GLC_FCS30D years available in Earth Engine.
+   - Aggregates 30 m categorical land cover to 250 m using modal class.
+   - Uses EPSG:3035 so 250 m is a true metric grid over Europe.
+   - Output region: Germany
+  Author: Jannatul
+----------------------------------------------------------------*/
+
+// ── 1 · STUDY AREA ─────────────────────────────────────────────
+var studyArea = ee.FeatureCollection('projects/white-stork-thesis/assets/de_clip')
+                   .geometry();
+
+var outFolder = 'gee_exports';
+
+// ── 2 · LOAD GLC_FCS30D COLLECTIONS ────────────────────────────
+var annualMosaic = ee.ImageCollection('projects/sat-io/open-datasets/GLC-FCS30D/annual')
+                     .mosaic();   // b1 = 2000 ... b23 = 2022
+
+var fiveMosaic   = ee.ImageCollection('projects/sat-io/open-datasets/GLC-FCS30D/five-years-map')
+                     .mosaic();   // b1 = 1985, b2 = 1990, b3 = 1995
+
+// ── 3 · EXPORT SETTINGS ────────────────────────────────────────
+var targetCRS   = 'EPSG:3035';   // Europe LAEA
+var targetScale = 250;           // 250 m
+
+// ── 4 · HELPER: GET 30 m LAND-COVER IMAGE FOR YEAR y ──────────
+function getLCImage(y) {
+  if (y < 2000) {
+    var band = (y === 1990) ? 'b2' : 'b3';   // 1990 -> b2, 1995 -> b3
+    return fiveMosaic.select(band).rename('LC');
+  } else {
+    var idx = y - 1999;                      // 2000 -> b1, 2001 -> b2, ...
+    return annualMosaic.select('b' + idx).rename('LC');
+  }
+}
+
+// ── 5 · HELPER: AGGREGATE 30 m -> 250 m USING MODE ─────────────
+function to250mMode(img) {
+  var projected30 = img.reproject({
+    crs: targetCRS,
+    scale: 30
+  });
+
+  var img250 = projected30
+    .reduceResolution({
+      reducer: ee.Reducer.mode(),
+      maxPixels: 1024
+    })
+    .reproject({
+      crs: targetCRS,
+      scale: targetScale
+    })
+    .rename('LC')
+    .toInt16();
+
+  return img250;
+}
+
+// ── 6 · YEARS TO EXPORT ────────────────────────────────────────
+var years = [1990, 1995, 2000, 2001, 2012, 2018, 2022];
+
+// ── 7 · EXPORT LOOP ────────────────────────────────────────────
+years.forEach(function(y) {
+  var lc30  = getLCImage(y).clip(studyArea);
+  var lc250 = to250mMode(lc30).clip(studyArea);
+  var name  = 'LC_' + y + '_250m';
+
+  Export.image.toDrive({
+    image: lc250,
+    description: name,
+    folder: outFolder,
+    fileNamePrefix: name,
+    region: studyArea,
+    crs: targetCRS,
+    scale: targetScale,
+    maxPixels: 1e13
+  });
+});
+
+// ── 8 · PREVIEW ────────────────────────────────────────────────
+Map.centerObject(studyArea, 7);
+Map.addLayer(getLCImage(2022).clip(studyArea), {}, 'GLC_FCS30D 2022 (30 m)');
+Map.addLayer(to250mMode(getLCImage(2022).clip(studyArea)), {}, 'GLC_FCS30D 2022 (250 m)');
