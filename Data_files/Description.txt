@@ -1,3 +1,0 @@
-MPIAB: raw data downloaded from Movebank
-stork data: RDS with raw (unscaled) variables and scaled variables
-filter data: RDS with scaled variables and removed rare land cover classes
